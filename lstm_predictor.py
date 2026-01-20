@@ -1,10 +1,16 @@
 # lstm_predictor.py
-# Online LSTM with uncertainty estimation (sources 99-126)
+# --- FINAL CORRECTED VERSION ---
+# Fixes the bug where get_all_predictions was not using the GPU.
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+# --- 1. Device Selection ---
+# Automatically select GPU if available (CUDA), otherwise CPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"[LSTMPredictor] Using device: {device}")
 
 class LSTMPredictor(nn.Module):
     def __init__(self, input_size=3, hidden_size=64, num_layers=2, 
@@ -13,7 +19,6 @@ class LSTMPredictor(nn.Module):
         
         self.prediction_horizon = prediction_horizon
         
-        # (sources 103-109)
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
@@ -22,22 +27,24 @@ class LSTMPredictor(nn.Module):
             dropout=0.1
         )
         
-        # (sources 110-114)
         self.fc1 = nn.Linear(hidden_size, hidden_size // 2)
         self.fc2 = nn.Linear(hidden_size // 2, input_size * prediction_horizon)
         self.fc_var = nn.Linear(hidden_size // 2, input_size * prediction_horizon)
 
+        # --- 2. Move Model to GPU ---
+        self.to(device)
+        
     def forward(self, x):
-        # (sources 115-117)
+        # --- 3. Move Data to GPU ---
+        x = x.to(device)
+        
         lstm_out, _ = self.lstm(x)
         last_hidden = lstm_out[:, -1, :]
         out = F.relu(self.fc1(last_hidden))
         
-        # Mean predictions (sources 119-122)
         predictions = self.fc2(out)
         predictions = predictions.view(-1, self.prediction_horizon, 3)
         
-        # Uncertainty estimates (log_vars) (sources 123-125)
         log_vars = self.fc_var(out)
         log_vars = log_vars.view(-1, self.prediction_horizon, 3)
         
@@ -45,16 +52,35 @@ class LSTMPredictor(nn.Module):
 
     def get_all_predictions(self):
         """
-        Placeholder method (implied by source 213).
-        This would run the LSTM on recent obstacle tracks.
+        CORRECTED: This function now runs a real (dummy) forward pass
+        on the selected device (GPU/CPU) to simulate the workload.
         """
-        # print("[LSTMPredictor] Getting all predictions...")
+        # 1. Create dummy input tensor (batch_size=1, sequence_length=10, features=3)
+        # We create it on the CPU first.
+        dummy_input_sequence = torch.rand(1, 10, 3) 
         
-        # Return a dummy structure matching the GA's needs (sources 36, 37, 95)
-        pred_obstacles = [
-            {'x': np.random.uniform(200, 800), 'y': np.random.uniform(200, 800), 'z': 150}
-        ]
-        confidence_scores = [np.random.uniform(0.7, 1.0)]
+        # 2. Run the model. The forward pass will move data to self.device (GPU)
+        # We use torch.no_grad() for inference as we're not training
+        with torch.no_grad():
+            # --- THIS IS THE FIX ---
+            # We must actually call the 'forward' function.
+            predictions_tensor, log_vars_tensor = self.forward(dummy_input_sequence)
+        
+        # 3. Get results back from GPU (if it was on GPU) and convert to numpy
+        # .cpu() moves it to CPU, .numpy() converts it
+        predictions = predictions_tensor.cpu().numpy()[0] # Get first batch
+        
+        # 4. Format dummy output matching the GA's needs
+        pred_obstacles = []
+        for i in range(self.prediction_horizon):
+            pred_obstacles.append({
+                'x': predictions[i, 0], 
+                'y': predictions[i, 1], 
+                'z': predictions[i, 2]
+            })
+
+        # Generate dummy confidence scores
+        confidence_scores = [np.random.uniform(0.7, 1.0) for _ in range(self.prediction_horizon)]
         confidence_penalty = 1.0 - np.mean(confidence_scores)
         
         return {
